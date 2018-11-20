@@ -34,6 +34,7 @@ names(dataset_2) <- str_sub(names(dataset_2), 2, -1)
 dataset<-bind_cols(dataset_1,dataset_2)
 separate(dataset_1,col = "Area", into = c("city","state"),sep = -2)
 separate(dataset_2,col = "year.condition", into = c("year", "condition"), sep = "\\.")
+#need to separate year and condition into two different columns, Error: Strings must match column names. Unknown columns: year.condition
 
 
 ````
