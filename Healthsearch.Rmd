@@ -25,5 +25,15 @@ ncol(dataset)
 head(dataset)
 str(dataset)
 summary(dataset)
-
 ```
+#column=variable and row=observation, year and searched conditions are in columns, use "gather" function to take year.conditon column and gather into key-value pairs. Use "separate" to split year.condition into separate columns
+```{r}
+dataset_1<-dataset[1]
+dataset_2<-dataset[2:length(dataset)]
+names(dataset_2) <- str_sub(names(dataset_2), 2, -1)
+dataset<-bind_cols(dataset_1,dataset_2)
+separate(dataset_1,col = "Area", into = c("city","state"),sep = -2)
+separate(dataset_2,col = "year.condition", into = c("year", "condition"), sep = "\\.")
+
+
+````
