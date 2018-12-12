@@ -1,0 +1,388 @@
+---
+title: "FinalResults"
+author: "Hira Khan"
+date: '2018-12-03'
+output:
+  word_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+install packages and upload dataset
+```{r}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(stringr)
+library(mapproj)
+library(noncensus)
+library(data.table)
+library(corrplot)
+library(fiftystater)
+dataset<-read.csv(file.choose(),header = TRUE,stringsAsFactors = FALSE)
+#dataset<-read.csv("healthsearch2.csv",header = TRUE, stringsAsFactors = FALSE)
+
+
+```
+
+Cleaning Dataset
+```{r}
+names(dataset)[1] <- "USA" # Rename the first column to 'USA'
+dataset_1 <- dataset[1:2]
+dataset_2 <- dataset[3:length(dataset)]
+names(dataset_2) <- str_sub(names(dataset_2), 2, -1) # Use str_sub to get the year.condition values
+dataset_1[which(dataset_1$USA == "Washington DC (Hagerstown MD)"), 1] <- "Washington DC (Hagerstown) MD"
+
+```
+
+Load the states dataset to join to healthsearch dataset
+```{r}
+data(states)
+#join year.condtion column and then separate into two separate columns 
+dd = dplyr::bind_cols(dataset_1, dataset_2)
+dataset <- dd %>%
+  gather("year.condition", "searches", 3:length(dataset))  %>%
+  separate(col = "year.condition", into = c("year", "condition"), sep = "\\.") %>%
+  separate(col = "USA", into = c("city", "state"), sep = -3) %>%   #Changed -2 to -3
+  group_by(city, state, geoCode, year, condition) %>%
+  summarize(searches = sum(searches)) %>%
+  left_join(states, by = "state") %>% # Join states table to get full names and population
+  select(3, 1:2, 7:10, 4:6, 11:12) %>%
+  setnames(old = c("state", "name"), new = c("state_abb", "state_name"))
+
+head(dataset, 10)
+
+```
+
+PLOTS
+```{r}
+searches_by_year <- dataset %>% 
+  group_by(year) %>%
+  summarize(searches = sum(searches)) %>%
+  mutate(difference = searches - lag(searches, default = first(searches)))
+ggplot(searches_by_year, aes(x = year, y = searches, group = 1)) +
+  geom_line(col = "darkblue", size = 2) +
+  labs(title = "Health Search Volume by 2004-2017")
+
+```
+
+PLOT for searches by year and condition
+```{r}
+searches_by_condition <- dataset %>%
+  group_by(year, condition) %>%
+  summarize(searches = sum(searches))
+ggplot(searches_by_condition, aes(x = year, y = searches, group = condition, col = condition)) +
+  geom_smooth(size = 1, se = FALSE) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1),
+        panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        panel.background = element_blank(), axis.line = element_line(color = "black")) +
+  labs(title = "Health Searchs Volume Year and Condition") 
+```
+
+Correlation between 9 condtions (using tidyr,dplyr,corrplot packages )
+```{r}
+dataset <- ungroup(dataset)
+yc_spread <- dataset %>%
+  spread(key = condition, value = searches)
+yc_cor <- yc_spread %>%
+  select(11:19) 
+condition_cor <- cor(yc_cor, method = "pearson")
+corrplot(condition_cor, method = "number", type = "upper", order = "hclust", tl.col = "red",tl.srt = 40)
+corrplot.mixed(condition_cor,lower.col = "black", number.cex=.80)
+```
+
+Removing NA's from dataset
+```{r}
+head(dataset)
+dataset$state_name<-NULL
+dataset$region<-NULL
+dataset$division<-NULL
+dataset$capital<-NULL
+dataset$area<-NULL
+dataset$population<-NULL
+
+#Renaming columns in dataset
+names(dataset)[3]<-"state"
+```
+
+Encoding categorical data- May need this for further algorithms
+```{r}
+conditions<-dataset[4:length(dataset)]
+
+#convert categorical to numerical levels for prediction algorithm 
+conditions$condition <- factor(conditions$condition,
+                     levels = c("cancer", "cardiovascular", "depression", "diabetes", "diarrhea", "obesity", "rehab", "stroke", "vaccine"),
+                     labels = c(1:9))
+```
+
+Simple Linear Regression (Cancer dependent variable, stroke and cardiovascular are independent)
+```{r}
+#renaming yc_cor to allconditions
+allconditions<-yc_cor[1:length(yc_cor)]
+
+#Data Preprocessing
+#Split dataset into Training set and Test set 
+library(caTools)
+set.seed(123)
+split = sample.split(allconditions$cancer, SplitRatio = .80)
+training_set = subset(allconditions, split== TRUE)
+test_set = subset(allconditions, split== FALSE)
+
+#Feature Scaling - not necessary
+#Simple Linear Regression to the Training Set (Part 1)
+regressor = lm (formula = cancer ~ cardiovascular,
+                data = training_set)
+#looking at co-efficient, there are three stars, meaning there is a high statistical significance. The lower the P-value the more significant the independant variable will be, the mor impact/effect the independent variable will have on the dependent variable. Below 5%, highly significant. 
+
+#Simple Linear Regression (Part 2- Predicting the Test Set Results)
+y_pred = predict(regressor, newdata = test_set)
+y_pred
+
+#visualizing Training set results 
+library(ggplot2)
+ggplot() +
+  geom_point(aes(x=training_set$cardiovascular, y=training_set$cancer),
+             colour = 'red')+
+  geom_line(aes(x=training_set$cardiovascular, y= predict(regressor, newdata = training_set)),
+            colour = 'blue') +
+  ggtitle('Cancer vs. Cardiovascular (Training Set)')+
+  xlab('Cardiovascular') +  
+  ylab('Cancer')
+
+#visualizing results Test set results
+library(ggplot2)
+ggplot() +
+  geom_point(aes(x=test_set$cardiovascular, y=test_set$cancer),
+             colour = 'green')+
+  geom_line(aes(x=training_set$cardiovascular, y= predict(regressor, newdata = training_set)),
+            colour = 'blue') +
+  ggtitle('Cancer vs. Cardiovascular (Test Set)')+
+  xlab('Cardiovascular') +  
+  ylab('Cancer')
+
+#Linear Regression for Stroke and Cancer 
+#renaming yc_cor to allconditions
+allconditions<-yc_cor[1:length(yc_cor)]
+
+#Data Preprocessing
+#Split dataset into Training set and Test set 
+library(caTools)
+set.seed(123)
+split = sample.split(allconditions$cancer, SplitRatio = .80)
+training_set = subset(allconditions, split== TRUE)
+test_set = subset(allconditions, split== FALSE)
+
+#Feature Scaling - not necessary
+#Simple Linear Regression to the Training Set (Part 1)
+regressor = lm (formula = cancer ~ stroke,
+                data = training_set)
+#looking at co-efficient, there are three stars, meaning there is a high statistical significance. The lower the P-value the more significant the independant variable will be, the mor impact/effect the independent variable will have on the dependent variable. Below 5%, highly significant. 
+
+#Simple Linear Regression (Part 2- Predicting the Test Set Results)
+y_pred = predict(regressor, newdata = test_set)
+y_pred
+
+#visualizing Training set results 
+library(ggplot2)
+ggplot() +
+  geom_point(aes(x=training_set$stroke, y=training_set$cancer),
+             colour = 'purple')+
+  geom_line(aes(x=training_set$stroke, y= predict(regressor, newdata = training_set)),
+            colour = 'red') +
+  ggtitle('Cancer vs. Stroke (Training Set)')+
+  xlab('Stroke') +  
+  ylab('Cancer')
+
+#visualizing results Test set results
+library(ggplot2)
+ggplot() +
+  geom_point(aes(x=test_set$stroke, y=test_set$cancer),
+             colour = 'yellow')+
+  geom_line(aes(x=training_set$stroke, y= predict(regressor, newdata = training_set)),
+            colour = 'blue') +
+  ggtitle('Cancer vs. Stroke (Test Set)')+
+  xlab('Stroke') +  
+  ylab('Cancer')
+```
+
+Multiple Linear Regression (Cancer is dependent variable and all other conditions are independent)
+```{r}
+
+set.seed(123)
+split = sample.split(yearcondition$cancer, SplitRatio = .80)
+training_set1 = subset(yearcondition, split== TRUE)
+test_set1 = subset(yearcondition, split== FALSE)
+
+regressor1 = lm(formula = cancer ~ cardiovascular + depression + diabetes + diarrhea + obesity + rehab + stroke + vaccine,
+               data = training_set1)
+
+summary(regressor1)
+# *** shows the significance level, the lower the P-value, the most significantly significant the independent variable is to the dependent variable. In this case, cardiovascular, depression,rehab,stroke and vaccine and significant. The independent variable with the lowest P-value is cardiovascular and stoke.  
+
+#Predicitng Test set results 
+y_pred1 = predict(regressor1, newdata = test_set1)
+#looking at the predicted and the test_set1 there isn't much of a difference
+
+#Buliding Optimal Model using Backward Elimination
+regressor1 = lm(formula = cancer ~ cardiovascular + depression + diabetes + diarrhea + obesity + rehab + stroke + vaccine,
+               data = yearcondition)
+summary(regressor1)
+
+regressor1 = lm(formula = cancer ~ cardiovascular  + stroke ,
+               data = yearcondition)
+summary(regressor1)
+
+
+```
+Logistic Regression
+```{r}
+set.seed(123)
+split = sample.split(allconditions$cancer, SplitRatio = .80)
+training_set1 = subset(allconditions, split== TRUE)
+test_set1 = subset(allconditions, split== FALSE)
+
+#Feature Scaling
+training_set1[,2:9] = scale(training_set1[,2:9])
+test_set1[,2:9] = scale(test_set1[,2:9])
+#Fitting Logistic Regression to the Training Set
+classifier = glm(formula = cancer ~ .,
+                 family = poisson,
+                 data = training_set1)
+
+#Prediciting Test Set Results 
+prob_pred = predict(classifier, type = 'response', newdata = test_set1[-1])
+y_pred = ifelse(prob_pred > 0.5,1,0)
+
+#Making Confusion Matrix
+#cm = table(test_set1[,1], y_pred)
+#This method is not applicable
+```
+
+Decision Tree Regression
+```{r}
+set.seed(123)
+split = sample.split(yearcondition$cancer, SplitRatio = .80)
+training_set1 = subset(yearcondition, split== TRUE)
+test_set1 = subset(yearcondition, split== FALSE)
+
+#Fitting Linear Regression to the Dataset 
+#lin_reg = lm(formula = cancer ~ .,
+             #data = yearcondition)
+#Fitting Decision Tree Regression to the Dataset 
+library(rpart)
+regressor = rpart(formula = cancer~.,
+                  data = yearcondition,
+                  control = rpart.control(minsplit =1))
+
+#Predicitng new result
+y_pred = predict(regressor, newdata = yearcondition)
+
+#Visulaizing Linear Regression results 
+library(ggplot2)
+ggplot()+
+  geom_point(aes(x = yearcondition$cardiovascular, y = yearcondition$cancer),
+             colour = "red") +
+  geom_line(aes(x = yearcondition$cardiovascular, y = predict(regressor, newdata = yearcondition)),
+             colour = "blue") +
+  ggtitle('Cancer vs. Cardiovasuclar (Decision Tree)') +
+  xlab('Cardiovascular') +
+  ylab('Cancer')
+  
+
+
+```
+
+
+Principal Component Analysis (allconditions dataset):
+-Dependent variable (Cancer) is not considered, making it an unsupervised model
+```{r}
+#Split dataset into training and test set 
+library(caTools)
+set.seed(123)
+split = sample.split(yearcondition$yrcondition, SplitRatio = 0.8)
+training_set = subset(yearcondition,split ==TRUE)
+test_set = subset(yearcondition, split ==FALSE)
+
+#Feature Scaling 
+training_set[-1]= scale(training_set[-1])
+test_set[-1]= scale(test_set[-1])
+
+#Applying PCA
+#install.packages("caret")
+library(caret)
+#install.packages("e1071")
+library(e1071)
+
+pca = preProcess(x=training_set[-1], method = 'pca', pcaComp = 2)
+training_set = predict(pca, training_set)
+test_set = predict(pca, test_set)
+
+classifier = svm(formula = yrcondition ~.,
+                 data = training_set,
+                 type = 'C-classification',
+                 kernel = 'linear')
+
+#Predicting Test Set results 
+y_pred = predict(classifier, newdata = test_set[-1])
+
+#Making confusion matrix 
+cm = table(test_set[,1],y_pred)
+
+#Confusion matrix does not show proper prediciton (method is not valid)
+
+set.seed(123)
+split = sample.split(allconditions$cancer, SplitRatio = 0.8)
+training_set = subset(allconditions,split ==TRUE)
+test_set = subset(allconditions, split ==FALSE)
+
+#Feature Scaling 
+training_set[-1]= scale(training_set[-1])
+test_set[-1]= scale(test_set[-1])
+
+#Applying PCA
+#install.packages("caret")
+library(caret)
+#install.packages("e1071")
+library(e1071)
+
+pca = preProcess(x=training_set[-1], method = 'pca', pcaComp = 2)
+training_set = predict(pca, training_set)
+test_set = predict(pca, test_set)
+
+classifier = svm(formula = cancer ~.,
+                 data = training_set,
+                 type = 'C-classification',
+                 kernel = 'linear')
+
+#Predicting Test Set results 
+y_pred = predict(classifier, newdata = test_set[-1])
+
+#Making confusion matrix 
+cm = table(test_set[,1],y_pred)
+
+```
+
+SVR
+```{r}
+set.seed(123)
+#split = sample.split(allconditions$cancer, SplitRatio = 0.8)
+#training_set = subset(allconditions,split ==TRUE)
+#test_set = subset(allconditions, split ==FALSE)
+
+#Feature Scaling 
+#training_set[-1]= scale(training_set[-1])
+#test_set[-1]= scale(test_set[-1])
+
+#Create classifier
+library(e1071)
+regressor = svm(formula = cancer ~ .,
+                 data = training_set,
+                 type = 'eps-regression')
+
+#Predicting Test Set results 
+y_pred = predict(classifier, newdata = test_set[-1])
+
+```
